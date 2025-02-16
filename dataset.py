@@ -2,6 +2,7 @@ import os
 import pickle
 import numpy as np
 from ultralytics import YOLO
+from lib.example import Example
 from lib.feature_extractor import FeatureExtractor
 from typing import List
 
@@ -31,19 +32,6 @@ def group_images(base_dir):
         groups[part_num].extend((ts, views) for ts, views in timestamps.items())
 
     return groups
-
-
-class Example:
-    """
-    Represents a group of 3 images for a single part number
-    """
-    def __init__(self, part_num: str, embeddings: np.ndarray, predictions: List[float], confidences: List[float], paths: List[str]):
-        self.part_num = part_num
-        self.embeddings = embeddings
-        self.predictions = predictions
-        self.confidences = confidences
-        self.paths = paths
-
 
 def process_image_groups(extractor, groups):
     """
@@ -78,7 +66,7 @@ def image_group_to_example(extractor, part_num, image_paths_by_view):
     return Example(part_num, embeddings, predictions, confidences, paths)
 
 
-dataset_name = "lego-multi-classify-01"
+dataset_name = "lego-classify-multi-01"
 
 model = YOLO("lego-classify-05-447-fixed-num.pt")
 extractor = FeatureExtractor(model)
