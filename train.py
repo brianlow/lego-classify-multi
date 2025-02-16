@@ -10,9 +10,9 @@ dataset_path = f"datasets/{dataset_name}.pkl"
 print(f"Loading dataset {dataset_path}...")
 with open(dataset_path, 'rb') as f:
     examples = pickle.load(f)
-train_loader, val_loader = prepare_data(examples, batch_size=32)
-num_classes = len(set([example.part_num for example in examples]))
-
+train_loader, val_loader, part_to_idx = prepare_data(examples, batch_size=32)
+num_classes = len(part_to_idx)
+print(f"{num_classes} classes, {len(examples)} examples")
 
 model = MultiViewFusion(num_classes=num_classes)
 trained_model = train_model(

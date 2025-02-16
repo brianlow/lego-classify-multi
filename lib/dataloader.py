@@ -1,15 +1,19 @@
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from lib.example import Example
 
 
-def prepare_data(examples: List[Example], batch_size: int) -> Tuple[DataLoader, DataLoader]:
-    """Convert Examples to DataLoader"""
-    # Stack embeddings and convert to tensors
-    embeddings = torch.tensor(np.stack([ex.embeddings for ex in examples]))
-    labels = torch.tensor([int(ex.part_num) for ex in examples])
+def prepare_data(examples: List[Example], batch_size: int) -> Tuple[DataLoader, DataLoader, Dict[str, int]]:
+    """Convert Examples to DataLoader and return part number mapping"""
+    # Create mapping of part numbers to integer indices
+    unique_parts = sorted(set(ex.part_num for ex in examples))
+    part_to_idx = {part: idx for idx, part in enumerate(unique_parts)}
+
+    # Stack embeddings and convert to tensors with explicit float32 dtype
+    embeddings = torch.tensor(np.stack([ex.embeddings for ex in examples]), dtype=torch.float32)
+    labels = torch.tensor([part_to_idx[ex.part_num] for ex in examples])
 
     # Split into train/val (80/20)
     indices = torch.randperm(len(examples))
@@ -32,4 +36,4 @@ def prepare_data(examples: List[Example], batch_size: int) -> Tuple[DataLoader, 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
-    return train_loader, val_loader
+    return train_loader, val_loader, part_to_idx
