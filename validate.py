@@ -156,6 +156,141 @@ class FusionEvaluator:
             'view_usage': dict(view_used_counts)
         }, all_results
 
+    def fuse_ensemble_voting(self, examples: List[Tuple[str, Dict[str, str]]]) -> Tuple[Dict, List[PredictionResult]]:
+        """Use weighted voting with confidence thresholds"""
+        confidence_threshold = 0.5  # Minimum confidence to consider a prediction
+
+        correct = 0
+        total = 0
+        failed_predictions = 0
+        view_used_counts = Counter()
+        all_results = []
+
+        for true_class, views in examples:
+            predictions = self.get_all_predictions(views)
+
+            if not predictions:
+                failed_predictions += 1
+                continue
+
+            # Filter predictions by confidence threshold
+            valid_predictions = [
+                (view_name, pred_class, conf)
+                for view_name, pred_class, conf in predictions
+                if conf >= confidence_threshold
+            ]
+
+            if not valid_predictions:
+                # Fall back to highest confidence if no predictions meet threshold
+                view_name, pred_class, confidence = max(predictions, key=lambda x: x[2])
+            else:
+                # Weight votes by confidence
+                class_votes = {}
+                for view_name, pred_class, conf in valid_predictions:
+                    class_votes[pred_class] = class_votes.get(pred_class, 0) + conf
+
+                # Select class with highest weighted votes
+                pred_class = max(class_votes.items(), key=lambda x: x[1])[0]
+
+                # Find the view that contributed most to winning prediction
+                view_entries = [
+                    (v_name, conf) for v_name, p_class, conf in valid_predictions
+                    if p_class == pred_class
+                ]
+                view_name, confidence = max(view_entries, key=lambda x: x[1])
+
+            view_used_counts[view_name] += 1
+            total += 1
+
+            if pred_class == true_class:
+                correct += 1
+
+            result = PredictionResult(
+                true_class=true_class,
+                pred_class=pred_class,
+                confidence=confidence,
+                views=views,
+                view_used=view_name
+            )
+            all_results.append(result)
+
+        return {
+            'accuracy': correct / total if total > 0 else 0,
+            'failed_predictions': failed_predictions,
+            'total': len(examples),
+            'view_usage': dict(view_used_counts)
+        }, all_results
+
+    def fuse_sequential_confidence(self, examples: List[Tuple[str, Dict[str, str]]]) -> Tuple[Dict, List[PredictionResult]]:
+        """Use sequential decision making with confidence thresholds"""
+        high_confidence = 0.9  # Threshold for immediate acceptance
+        low_confidence = 0.3   # Threshold for rejection
+
+        correct = 0
+        total = 0
+        failed_predictions = 0
+        view_used_counts = Counter()
+        all_results = []
+
+        for true_class, views in examples:
+            # Try views in priority order
+            best_prediction = None
+            accumulated_evidence = {}
+
+            for view in ['front', 'back', 'bottom']:
+                if views.get(view):
+                    pred_class, confidence = self.predict_single_image(views[view])
+
+                    if pred_class is None:
+                        continue
+
+                    # Track prediction evidence
+                    if pred_class not in accumulated_evidence:
+                        accumulated_evidence[pred_class] = []
+                    accumulated_evidence[pred_class].append((view, confidence))
+
+                    # Update best prediction if needed
+                    if (best_prediction is None or
+                        confidence > best_prediction[2] or
+                        (pred_class in accumulated_evidence and
+                        len(accumulated_evidence[pred_class]) > 1)):
+                        best_prediction = (view, pred_class, confidence)
+
+                    # Accept high confidence predictions immediately
+                    if confidence >= high_confidence:
+                        break
+
+                    # Reject low confidence predictions unless corroborated
+                    if confidence <= low_confidence and len(accumulated_evidence.get(pred_class, [])) <= 1:
+                        continue
+
+            if best_prediction is None:
+                failed_predictions += 1
+                continue
+
+            view_name, pred_class, confidence = best_prediction
+            view_used_counts[view_name] += 1
+            total += 1
+
+            if pred_class == true_class:
+                correct += 1
+
+            result = PredictionResult(
+                true_class=true_class,
+                pred_class=pred_class,
+                confidence=confidence,
+                views=views,
+                view_used=view_name
+            )
+            all_results.append(result)
+
+        return {
+            'accuracy': correct / total if total > 0 else 0,
+            'failed_predictions': failed_predictions,
+            'total': len(examples),
+            'view_usage': dict(view_used_counts)
+        }, all_results
+
 def create_error_visualization(results: List[PredictionResult], strategy_name: str, num_examples: int = 16):
     """Create a grid of misclassified examples with instruction manual images for both true and predicted classes"""
     # Filter for incorrect predictions
@@ -260,6 +395,15 @@ print("Num examples:", len(examples))
 print("Num classes:", len(set([example[0] for example in examples])))
 
 # Run evaluations
+
+metrics, results = evaluator.fuse_ensemble_voting(examples)
+create_error_visualization(results, "ensemble_voting")
+print("Ensemble voting:", metrics)
+
+metrics, results = evaluator.fuse_sequential_confidence(examples)
+create_error_visualization(results, "sequential_confidence")
+print("Sequential Confidence:", metrics)
+
 metrics, results = evaluator.evaluate_front_only(examples)
 create_error_visualization(results, "front_only")
 print("Front Only:", metrics)
@@ -272,6 +416,11 @@ metrics, results = evaluator.fuse_max_confidence(examples)
 create_error_visualization(results, "max_confidence")
 print("Max Confidence:", metrics)
 
-# metrics, results = evaluator.fuse_majority_vote(examples)
-# create_error_visualization(results, "majority_vote")
-# print("Majority Vote:", metrics)
+# Results
+#   Num examples: 303
+#   Num classes: 47
+#   Ensemble voting: {'accuracy': 0.8844884488448845, 'failed_predictions': 0, 'total': 303, 'view_usage': {'back': 148, 'front': 96, 'bottom': 59}}
+#   Sequential Confidence: {'accuracy': 0.8778877887788779, 'failed_predictions': 0, 'total': 303, 'view_usage': {'back': 66, 'front': 176, 'bottom': 61}}
+#   Front Only: {'accuracy': 0.7623762376237624, 'failed_predictions': 11, 'total': 303}
+#   First Available: {'accuracy': 0.7887788778877888, 'failed_predictions': 0, 'total': 303, 'view_usage': {'front': 292, 'bottom': 11}}
+#   Max Confidence: {'accuracy': 0.8778877887788779, 'failed_predictions': 0, 'total': 303, 'view_usage': {'back': 146, 'front': 97, 'bottom': 60}}
