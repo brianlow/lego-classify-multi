@@ -3,7 +3,8 @@ import numpy as np
 from pathlib import Path
 from ultralytics import YOLO
 from collections import Counter
-from PIL import Image
+from PIL import Image, ImageDraw
+from typing import List
 import random
 
 from lib.compensate import model_03_to_canonical, rebrickable_to_canonical
@@ -44,13 +45,13 @@ class FusionEvaluator:
         all_results = []
 
         for true_class, views in examples:
+            total += 1
             pred_class, confidence = self.predict_single_image(views.get('front'))
 
             if pred_class is None:
                 failed_predictions += 1
                 continue
 
-            total += 1
             if pred_class == true_class:
                 correct += 1
 
@@ -156,7 +157,7 @@ class FusionEvaluator:
         }, all_results
 
 def create_error_visualization(results: List[PredictionResult], strategy_name: str, num_examples: int = 16):
-    """Create a grid of misclassified examples"""
+    """Create a grid of misclassified examples with instruction manual images for both true and predicted classes"""
     # Filter for incorrect predictions
     errors = [r for r in results if r.true_class != r.pred_class]
 
@@ -169,14 +170,15 @@ def create_error_visualization(results: List[PredictionResult], strategy_name: s
     rows = (sample_size + cols - 1) // cols
 
     # Create canvas
-    # Each example gets 3 images side by side, plus some padding and text
+    # Each example gets 5 images side by side (true instruction, 3 views, pred instruction), plus padding and text
     img_size = 100
-    example_width = 3 * img_size + 40  # 3 images plus padding
+    example_width = 5 * img_size + 60  # 5 images plus padding
     example_height = img_size + 40  # image plus text
     width = cols * example_width + 20
     height = rows * example_height + 20
 
     canvas = Image.new('RGB', (width, height), 'white')
+    draw = ImageDraw.Draw(canvas)
 
     for idx, result in enumerate(samples):
         row = idx // cols
@@ -184,7 +186,21 @@ def create_error_visualization(results: List[PredictionResult], strategy_name: s
         x = col * example_width + 10
         y = row * example_height + 10
 
-        # For each view
+        # Add true class instruction manual image first
+        instruction_path = f"../lego-part-library/instruction/{result.true_class}.png"
+        try:
+            instruction_img = Image.open(instruction_path)
+            instruction_img = instruction_img.resize((img_size, img_size))
+            canvas.paste(instruction_img, (x, y))
+        except Exception as e:
+            print(f"Error loading true class instruction image for {result.true_class}: {str(e)}")
+            # Create a placeholder for missing instruction image
+            placeholder = Image.new('RGB', (img_size, img_size), 'lightgray')
+            draw_placeholder = ImageDraw.Draw(placeholder)
+            draw_placeholder.text((10, 40), "No instruction\nimage", fill='black')
+            canvas.paste(placeholder, (x, y))
+
+        # For each camera view
         for view_idx, view in enumerate(['front', 'back', 'bottom']):
             if view in result.views and result.views[view]:
                 try:
@@ -193,20 +209,31 @@ def create_error_visualization(results: List[PredictionResult], strategy_name: s
 
                     # Highlight the view that was used for prediction
                     if view == result.view_used:
-                        # Add a colored border or marker
                         overlay = Image.new('RGB', (img_size, img_size), 'red')
                         mask = Image.new('L', (img_size, img_size), 0)
                         for i in range(3):  # 3 pixel border
                             mask.paste(255, (i, i, img_size-i, img_size-i))
-                        canvas.paste(overlay, (x + view_idx * (img_size + 10), y), mask)
+                        canvas.paste(overlay, (x + (view_idx + 1) * (img_size + 10), y), mask)
 
-                    canvas.paste(img, (x + view_idx * (img_size + 10), y))
+                    canvas.paste(img, (x + (view_idx + 2) * (img_size + 10), y))
                 except Exception as e:
                     print(f"Error processing image {result.views[view]}: {str(e)}")
 
+        # Add predicted class instruction manual image at the end
+        pred_instruction_path = f"../lego-part-library/instruction/{result.pred_class}.png"
+        try:
+            pred_instruction_img = Image.open(pred_instruction_path)
+            pred_instruction_img = pred_instruction_img.resize((img_size, img_size))
+            canvas.paste(pred_instruction_img, (x + (img_size + 10), y))
+        except Exception as e:
+            print(f"Error loading predicted class instruction image for {result.pred_class}: {str(e)}")
+            # Create a placeholder for missing instruction image
+            placeholder = Image.new('RGB', (img_size, img_size), 'lightgray')
+            draw_placeholder = ImageDraw.Draw(placeholder)
+            draw_placeholder.text((10, 40), "No instruction\nimage", fill='black')
+            canvas.paste(placeholder, (x + (img_size + 10), y))
+
         # Add text below images
-        from PIL import ImageDraw
-        draw = ImageDraw.Draw(canvas)
         text = f"True: {result.true_class} Pred: {result.pred_class} ({result.confidence:.2f})"
         draw.text((x, y + img_size + 5), text, fill='black')
 
@@ -237,6 +264,14 @@ metrics, results = evaluator.evaluate_front_only(examples)
 create_error_visualization(results, "front_only")
 print("Front Only:", metrics)
 
-# print("First Available:", evaluator.evaluate_first_available(examples))
-# print("Max Confidence:", evaluator.fuse_max_confidence(examples))
-# print("Majority Vote:", evaluator.fuse_majority_vote(examples))
+metrics, results = evaluator.evaluate_first_available(examples)
+create_error_visualization(results, "first_available")
+print("First Available:", metrics)
+
+metrics, results = evaluator.fuse_max_confidence(examples)
+create_error_visualization(results, "max_confidence")
+print("Max Confidence:", metrics)
+
+# metrics, results = evaluator.fuse_majority_vote(examples)
+# create_error_visualization(results, "majority_vote")
+# print("Majority Vote:", metrics)
