@@ -2,7 +2,7 @@ from typing import Dict, List, Tuple, Optional, NamedTuple
 import numpy as np
 from pathlib import Path
 from ultralytics import YOLO
-from collections import Counter
+from collections import Counter, defaultdict
 from PIL import Image, ImageDraw
 from typing import List
 import random
@@ -291,6 +291,82 @@ class FusionEvaluator:
             'view_usage': dict(view_used_counts)
         }, all_results
 
+    def predict_single_image_topk(self, image_path: Optional[str], k: int = 3) -> List[Tuple[str, float]]:
+        """Predict top k classes and confidences for a single image"""
+        if image_path is None or not Path(image_path).exists():
+            return []
+
+        image = Image.open(image_path)
+        results = self.model.predict(image, verbose=False)
+
+        # Get top k predictions
+        probs = results[0].probs
+        topk_indices = (-probs.data).argsort()[:k].tolist()
+        predictions = [
+            (compensate(results[0].names[idx]), probs.data[idx].item())
+            for idx in topk_indices
+        ]
+        return predictions
+
+    def fuse_topk_confidence(self, examples: List[Tuple[str, Dict[str, str]]], k: int = 3) -> Tuple[Dict, List[PredictionResult]]:
+        """
+        Fuse predictions by summing confidence scores of top k predictions across all views.
+        For each view, get top k predictions and add their confidences to a running total.
+        """
+        correct = 0
+        total = 0
+        failed_predictions = 0
+        view_used_counts = Counter()
+        all_results = []
+
+        for true_class, views in examples:
+            # Accumulate confidence scores for each predicted class
+            class_confidence = defaultdict(float)
+            view_confidences = {}  # Track which view gave highest confidence for each class
+
+            # Get top k predictions from each view
+            for view_name, path in views.items():
+                predictions = self.predict_single_image_topk(path, k=k)
+
+                for pred_class, confidence in predictions:
+                    # Add confidence to running total for this class
+                    class_confidence[pred_class] += confidence
+
+                    # Track which view gave highest confidence for this prediction
+                    if pred_class not in view_confidences or confidence > view_confidences[pred_class][1]:
+                        view_confidences[pred_class] = (view_name, confidence)
+
+            if not class_confidence:
+                failed_predictions += 1
+                continue
+
+            # Select class with highest total confidence
+            pred_class = max(class_confidence.items(), key=lambda x: x[1])[0]
+            total_confidence = class_confidence[pred_class]
+            view_name = view_confidences[pred_class][0]
+
+            view_used_counts[view_name] += 1
+            total += 1
+
+            if pred_class == true_class:
+                correct += 1
+
+            result = PredictionResult(
+                true_class=true_class,
+                pred_class=pred_class,
+                confidence=total_confidence,
+                views=views,
+                view_used=view_name
+            )
+            all_results.append(result)
+
+        return {
+            'accuracy': correct / total if total > 0 else 0,
+            'failed_predictions': failed_predictions,
+            'total': len(examples),
+            'view_usage': dict(view_used_counts)
+        }, all_results
+
 def create_error_visualization(results: List[PredictionResult], strategy_name: str, num_examples: int = 16):
     """Create a grid of misclassified examples with instruction manual images for both true and predicted classes"""
     # Filter for incorrect predictions
@@ -396,6 +472,10 @@ print("Num classes:", len(set([example[0] for example in examples])))
 
 # Run evaluations
 
+metrics, results = evaluator.fuse_topk_confidence(examples, k=5)
+create_error_visualization(results, "topk_confidence")
+print("TopK Confidence:", metrics)
+
 metrics, results = evaluator.fuse_ensemble_voting(examples)
 create_error_visualization(results, "ensemble_voting")
 print("Ensemble voting:", metrics)
@@ -419,6 +499,8 @@ print("Max Confidence:", metrics)
 # Results
 #   Num examples: 303
 #   Num classes: 47
+#   Top3 Confidence: {'accuracy': 0.9042904290429042, 'failed_predictions': 0, 'total': 303, 'view_usage': {'back': 149, 'front': 99, 'bottom': 55}}
+#   Top5 same as Top3
 #   Ensemble voting: {'accuracy': 0.8844884488448845, 'failed_predictions': 0, 'total': 303, 'view_usage': {'back': 148, 'front': 96, 'bottom': 59}}
 #   Sequential Confidence: {'accuracy': 0.8778877887788779, 'failed_predictions': 0, 'total': 303, 'view_usage': {'back': 66, 'front': 176, 'bottom': 61}}
 #   Front Only: {'accuracy': 0.7623762376237624, 'failed_predictions': 11, 'total': 303}
